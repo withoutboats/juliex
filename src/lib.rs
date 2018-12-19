@@ -47,7 +47,7 @@ struct TaskQueue {
 
 #[derive(Clone, Debug)]
 #[repr(transparent)]
-struct Task(Pin<Arc<AtomicFuture>>);
+struct Task(Arc<AtomicFuture>);
 
 #[derive(Debug)]
 struct AtomicFuture<F: ?Sized = ()> {
@@ -75,7 +75,7 @@ impl Task {
                 vtable: self.0.vtable,
             }))
         };
-        let waker = waker(&*self.0 as *const AtomicFuture);
+        let waker = waker(&*self.0);
         loop {
             if let Poll::Ready(_) = future.as_mut().poll(&waker) {
                 break self.0.status.store(COMPLETE, SeqCst);
@@ -85,7 +85,7 @@ impl Task {
                 Err(_)  => self.0.status.store(POLLING, SeqCst),
             }
         }
-        forget(waker);
+        forget(waker)
     }
 }
 
@@ -113,10 +113,7 @@ unsafe impl UnsafeWake for AtomicFuture {
     }
 
     unsafe fn clone_raw(&self) -> Waker {
-        let task = clone_task(self);
-        let waker = Waker::new(NonNull::from(&*clone_task(self).0));
-        forget(task);
-        waker
+        Waker::new(NonNull::new_unchecked(Arc::into_raw(clone_task(self).0) as *mut AtomicFuture))
     }
 
     unsafe fn drop_raw(&self) {
@@ -129,7 +126,7 @@ unsafe fn waker(task: *const AtomicFuture) -> LocalWaker {
 }
 
 unsafe fn task(future: *const AtomicFuture) -> Task {
-    Task(Pin::new_unchecked(Arc::from_raw(future)))
+    Task(Arc::from_raw(future))
 }
 
 unsafe fn clone_task(future: *const AtomicFuture) -> Task {
