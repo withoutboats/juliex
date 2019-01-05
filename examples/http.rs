@@ -1,5 +1,4 @@
 #![feature(async_await, await_macro, futures_api)]
-#![feature(dbg_macro)]
 
 use std::io;
 
@@ -12,7 +11,7 @@ use romio::{TcpListener};
 
 fn main() -> io::Result<()> {
     executor::block_on(async {
-        let listener = TcpListener::bind(&"127.0.0.1:7878".parse().unwrap())?;
+        let mut listener = TcpListener::bind(&"127.0.0.1:7878".parse().unwrap())?;
         let mut incoming = listener.incoming();
 
         println!("Listening on 127.0.0.1:7878");
@@ -21,10 +20,8 @@ fn main() -> io::Result<()> {
             let stream = stream?;
 
             juliex::spawn(async move {
-              let (mut reader, mut writer) = stream.split();
+              let (_, mut writer) = stream.split();
               await!(writer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length:0\r\n\r\n")).unwrap();
-              let mut buf = vec![];
-              await!(reader.read_to_end(&mut buf)).unwrap();
             });
         }
 

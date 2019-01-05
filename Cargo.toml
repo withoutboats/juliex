@@ -14,5 +14,8 @@ lazy_static = "1.2.0"
 romio = "0.3.0-alpha.1"
 
 [dev-dependencies.futures]
-version = "0.3.0-alpha.10"
+version = "0.3.0-alpha.11"
 package = "futures-preview"
+
+[patch.crates-io]
+romio = { git = 'https://github.com/withoutboats/romio' }
