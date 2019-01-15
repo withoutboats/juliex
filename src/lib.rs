@@ -1,20 +1,21 @@
-#![feature(pin, arbitrary_self_types, futures_api)]
-use std::cell::UnsafeCell;
-use std::future::Future;
+#![feature(arbitrary_self_types, futures_api)]
+use std::cell::unsafecell;
+use std::future::future;
 use std::mem::{transmute, forget};
-use std::pin::Pin;
-use std::ptr::NonNull;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering::SeqCst}};
-use std::task::{Poll, LocalWaker, Waker, UnsafeWake};
+use std::pin::pin;
+use std::ptr::nonnull;
+use std::sync::{arc, atomic::{atomicusize, ordering::seqcst}};
+use std::task::{poll, localwaker, waker, unsafewake};
 use std::thread;
 
 use crossbeam::channel;
 
 lazy_static::lazy_static! {
-    static ref QUEUE: Arc<TaskQueue> = {
+    static ref queue: arc<taskqueue> = {
         let (tx, rx) = channel::unbounded();
-        let queue = Arc::new(TaskQueue { tx, rx});
-        for _ in 0..num_cpus::get() {
+        let queue = arc::new(taskqueue { tx, rx});
+        let max_cpus = num_cpus::get() * 2;
+        for _ in 0..max_cpus {
             let queue = queue.clone();
             thread::spawn(move || {
                 for task in &queue.rx {
@@ -26,84 +27,84 @@ lazy_static::lazy_static! {
     };
 }
 
-pub fn spawn<F>(future: F) where F: Future<Output = ()> + Send + 'static {
+pub fn spawn<f>(future: f) where f: future<output = ()> + send + 'static {
     let vtable = unsafe {
-        transmute::<&(dyn Future<Output = ()> + Send + 'static), Obj>(&future).vtable
+        transmute::<&(dyn future<output = ()> + send + 'static), obj>(&future).vtable
     };
-    let future: Arc<AtomicFuture<F>> = Arc::new(AtomicFuture {
-        status: AtomicUsize::new(WAITING),
+    let future: arc<atomicfuture<f>> = arc::new(atomicfuture {
+        status: atomicusize::new(waiting),
         vtable: vtable,
-        future: UnsafeCell::new(future)
+        future: unsafecell::new(future)
     });
-    let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
+    let future: *const atomicfuture = arc::into_raw(future) as *const atomicfuture;
     let task = unsafe { task(future) };
-    QUEUE.tx.send(task).unwrap();
+    queue.tx.send(task).unwrap();
 }
 
-struct TaskQueue {
-    tx: channel::Sender<Task>,
-    rx: channel::Receiver<Task>,
+struct taskqueue {
+    tx: channel::sender<task>,
+    rx: channel::receiver<task>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(clone, debug)]
 #[repr(transparent)]
-struct Task(Arc<AtomicFuture>);
+struct task(arc<atomicfuture>);
 
-#[derive(Debug)]
-struct AtomicFuture<F: ?Sized = ()> {
-    status: AtomicUsize,
+#[derive(debug)]
+struct atomicfuture<f: ?sized = ()> {
+    status: atomicusize,
     vtable: *const (),
-    future: UnsafeCell<F>,
+    future: unsafecell<f>,
 }
 
-#[repr(C)] struct Obj { data: *mut (), vtable: *const () }
+#[repr(c)] struct obj { data: *mut (), vtable: *const () }
 
-unsafe impl Send for AtomicFuture { }
-unsafe impl Sync for AtomicFuture { }
+unsafe impl send for atomicfuture { }
+unsafe impl sync for atomicfuture { }
 
-const WAITING: usize = 0;       // --> POLLING
-const POLLING: usize = 1;       // --> WAITING, REPOLL, or COMPLETE
-const REPOLL: usize = 2;        // --> POLLING
-const COMPLETE: usize = 3;      // No transitions out
+const waiting: usize = 0;       // --> polling
+const polling: usize = 1;       // --> waiting, repoll, or complete
+const repoll: usize = 2;        // --> polling
+const complete: usize = 3;      // no transitions out
 
-impl Task {
+impl task {
     unsafe fn poll(self) {
-        self.0.status.store(POLLING, SeqCst);
-        let mut future: Pin<&mut (dyn Future<Output = ()> + Send + 'static)> = {
-            Pin::new_unchecked(transmute(Obj {
+        self.0.status.store(polling, seqcst);
+        let mut future: pin<&mut (dyn future<output = ()> + send + 'static)> = {
+            pin::new_unchecked(transmute(obj {
                 data: self.0.future.get(),
                 vtable: self.0.vtable,
             }))
         };
         let waker = waker(&*self.0);
         loop {
-            if let Poll::Ready(_) = future.as_mut().poll(&waker) {
-                break self.0.status.store(COMPLETE, SeqCst);
+            if let poll::ready(_) = future.as_mut().poll(&waker) {
+                break self.0.status.store(complete, seqcst);
             }
-            match self.0.status.compare_exchange(POLLING, WAITING, SeqCst, SeqCst) {
-                Ok(_)   => break,
-                Err(_)  => self.0.status.store(POLLING, SeqCst),
+            match self.0.status.compare_exchange(polling, waiting, seqcst, seqcst) {
+                ok(_)   => break,
+                err(_)  => self.0.status.store(polling, seqcst),
             }
         }
         forget(waker)
     }
 }
 
-unsafe impl UnsafeWake for AtomicFuture {
+unsafe impl unsafewake for atomicfuture {
     unsafe fn wake(&self) {
-        let mut status = self.status.load(SeqCst);
+        let mut status = self.status.load(seqcst);
         loop {
             match status {
-                WAITING => {
-                    match self.status.compare_exchange(WAITING, POLLING, SeqCst, SeqCst) {
-                        Ok(_) => {
-                            return QUEUE.tx.send(clone_task(self)).unwrap()
+                waiting => {
+                    match self.status.compare_exchange(waiting, polling, seqcst, seqcst) {
+                        ok(_) => {
+                            return queue.tx.send(clone_task(self)).unwrap()
                         }
-                        Err(cur) => status = cur,
+                        err(cur) => status = cur,
                     }
                 }
-                POLLING => {
-                    if let Err(cur) = self.status.compare_exchange(POLLING, REPOLL, SeqCst, SeqCst) {
+                polling => {
+                    if let err(cur) = self.status.compare_exchange(polling, repoll, seqcst, seqcst) {
                         status = cur;
                     }
                 }
@@ -112,8 +113,8 @@ unsafe impl UnsafeWake for AtomicFuture {
         }
     }
 
-    unsafe fn clone_raw(&self) -> Waker {
-        Waker::new(NonNull::new_unchecked(Arc::into_raw(clone_task(self).0) as *mut AtomicFuture))
+    unsafe fn clone_raw(&self) -> waker {
+        waker::new(nonnull::new_unchecked(arc::into_raw(clone_task(self).0) as *mut atomicfuture))
     }
 
     unsafe fn drop_raw(&self) {
@@ -121,15 +122,15 @@ unsafe impl UnsafeWake for AtomicFuture {
     }
 }
 
-unsafe fn waker(task: *const AtomicFuture) -> LocalWaker {
-    LocalWaker::new(NonNull::new_unchecked(task as *mut AtomicFuture))
+unsafe fn waker(task: *const atomicfuture) -> localwaker {
+    localwaker::new(nonnull::new_unchecked(task as *mut atomicfuture))
 }
 
-unsafe fn task(future: *const AtomicFuture) -> Task {
-    Task(Arc::from_raw(future))
+unsafe fn task(future: *const atomicfuture) -> task {
+    task(arc::from_raw(future))
 }
 
-unsafe fn clone_task(future: *const AtomicFuture) -> Task {
+unsafe fn clone_task(future: *const atomicfuture) -> task {
     let task = task(future);
     forget(task.clone());
     task
