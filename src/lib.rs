@@ -6,7 +6,7 @@
 //! concurrency primitives and multiple allocations.
 //!
 //! Similar to [romio][romio] - an IO reactor - juliex currently provides no user
-//! configuration. It exposes only the simplest API possible.
+//! configuration. It exposes the most minimal API possible.
 //!
 //! [romio]: https://github.com/withoutboats/romio
 //!

@@ -1,4 +1,4 @@
-# juliex - a simple futures executor
+# juliex - a minimal futures executor
 
 juliex is a concurrent executor for Rust futures. It is implemented as a
 threadpool executor using a single, shared queue. Algorithmically, it is very
@@ -8,7 +8,7 @@ allocation per spawned future, whereas the futures Threadpool uses std
 concurrency primitives and multiple allocations.
 
 Similar to [romio][romio] - an IO reactor - juliex currently provides no user
-configuration. It exposes only the simplest API possible.
+configuration. It exposes the most minimal API possible.
 
 ## Example
 ```rust
@@ -52,5 +52,12 @@ async fn echo_on(stream: TcpStream) -> io::Result<()> {
     Ok(())
 }
 ```
+
+## Safety
+This crate uses `unsafe` internally around atomic access. Invariants around this
+are manually checked.
+
+## License
+MIT OR Apache-2.0
 
 [romio]: https://github.com/withoutboats/romio
