@@ -1,7 +1,10 @@
 #![feature(arbitrary_self_types, futures_api)]
+
+#[cfg(test)]
+mod tests;
 use std::cell::UnsafeCell;
 use std::future::Future;
-use std::mem::{transmute, forget};
+use std::mem::{ManuallyDrop, transmute, forget};
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering::SeqCst}};
@@ -28,17 +31,7 @@ lazy_static::lazy_static! {
 }
 
 pub fn spawn<F>(future: F) where F: Future<Output = ()> + Send + 'static {
-    let vtable = unsafe {
-        transmute::<&(dyn Future<Output = ()> + Send + 'static), Obj>(&future).vtable
-    };
-    let future: Arc<AtomicFuture<F>> = Arc::new(AtomicFuture {
-        status: AtomicUsize::new(WAITING),
-        vtable: vtable,
-        future: UnsafeCell::new(future)
-    });
-    let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
-    let task = unsafe { task(future) };
-    QUEUE.tx.send(task).unwrap();
+    QUEUE.tx.send(Task::new(future)).unwrap();
 }
 
 struct TaskQueue {
@@ -54,7 +47,21 @@ struct Task(Arc<AtomicFuture>);
 struct AtomicFuture<F: ?Sized = ()> {
     status: AtomicUsize,
     vtable: *const (),
-    future: UnsafeCell<F>,
+    future: ManuallyDrop<UnsafeCell<F>>,
+}
+
+impl<F: ?Sized> Drop for AtomicFuture<F> {
+    fn drop(&mut self) {
+        unsafe {
+            let future: &mut ManuallyDrop<dyn Future<Output = ()> + Send + 'static> = {
+                transmute(Obj {
+                    data: self.future.get() as *mut (),
+                    vtable: self.vtable,
+                })
+            };
+            ManuallyDrop::drop(future);
+        }
+    }
 }
 
 #[repr(C)] struct Obj { data: *mut (), vtable: *const () }
@@ -68,6 +75,19 @@ const REPOLL: usize = 2;        // --> POLLING
 const COMPLETE: usize = 3;      // No transitions out
 
 impl Task {
+    fn new<F: Future<Output = ()> + Send + 'static>(future: F) -> Task {
+        let vtable = unsafe {
+            transmute::<&(dyn Future<Output = ()> + Send + 'static), Obj>(&future).vtable
+        };
+        let future: Arc<AtomicFuture<F>> = Arc::new(AtomicFuture {
+            status: AtomicUsize::new(WAITING),
+            vtable: vtable,
+            future: ManuallyDrop::new(UnsafeCell::new(future))
+        });
+        let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
+        unsafe { task(future) }
+    }
+
     unsafe fn poll(self) {
         self.0.status.store(POLLING, SeqCst);
         let mut future: Pin<&mut (dyn Future<Output = ()> + Send + 'static)> = {
