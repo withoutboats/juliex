@@ -16,7 +16,7 @@ impl Future for DropFuture {
 
 impl Drop for DropFuture {
     fn drop(&mut self) {
-        self.0.send(());
+        self.0.send(()).unwrap();
     }
 }
 
