@@ -9,7 +9,7 @@ struct DropFuture(Sender<()>);
 
 impl Future for DropFuture {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, _: &LocalWaker) -> Poll<()> {
+    fn poll(self: Pin<&mut Self>, _: &Waker) -> Poll<()> {
         Poll::Ready(())
     }
 }
