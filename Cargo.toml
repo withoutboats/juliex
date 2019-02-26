@@ -3,6 +3,7 @@ name = "juliex"
 edition = "2018"
 version = "0.3.0-alpha.1"
 authors = ["Without Boats <boats@mozilla.com>"]
+description = "a very basic future executor"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
