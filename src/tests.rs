@@ -35,13 +35,13 @@ fn destructor_runs() {
 }
 
 #[test]
-fn with_init() {
+fn with_setup() {
     thread_local! {
         static FLAG: Cell<bool> = Cell::new(false);
     }
 
     // Test that the init function gets called.
-    let pool = ThreadPool::with_init(|| FLAG.with(|f| f.set(true)));
+    let pool = ThreadPool::with_setup(|| FLAG.with(|f| f.set(true)));
     let (tx, rx) = channel();
 
     pool.spawn(async move {
