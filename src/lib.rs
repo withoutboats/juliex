@@ -23,7 +23,7 @@ lazy_static::lazy_static! {
 }
 
 thread_local! {
-    static QUEUE: RefCell<Weak<TaskQueue>> = RefCell::new(Arc::downgrade(&THREAD_POOL.queue));
+    static QUEUE: RefCell<Weak<TaskQueue>> = RefCell::new(Weak::new());
 }
 
 /// A threadpool that futures can be spawned on.
@@ -71,7 +71,10 @@ impl ThreadPool {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        self.queue.tx.send(Task::new(future)).unwrap();
+        self.queue
+            .tx
+            .send(Task::new(future, self.queue.clone()))
+            .unwrap();
     }
 }
 
@@ -82,7 +85,9 @@ where
 {
     QUEUE.with(|q| {
         if let Some(q) = q.borrow().upgrade() {
-            q.tx.send(Task::new(future)).unwrap();
+            q.tx.send(Task::new(future, q.clone())).unwrap();
+        } else {
+            THREAD_POOL.spawn(future);
         }
     });
 }
@@ -97,6 +102,7 @@ struct TaskQueue {
 struct Task(Arc<AtomicFuture>);
 
 struct AtomicFuture {
+    queue: Arc<TaskQueue>,
     status: AtomicUsize,
     future: UnsafeCell<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
@@ -116,8 +122,9 @@ const REPOLL: usize = 2; // --> POLLING
 const COMPLETE: usize = 3; // No transitions out
 
 impl Task {
-    fn new<F: Future<Output = ()> + Send + 'static>(future: F) -> Task {
+    fn new<F: Future<Output = ()> + Send + 'static>(future: F, queue: Arc<TaskQueue>) -> Task {
         let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
+            queue,
             status: AtomicUsize::new(WAITING),
             future: UnsafeCell::new(Box::pin(future)),
         });
@@ -183,14 +190,8 @@ unsafe fn wake_raw(this: *const ()) {
                     .compare_exchange(WAITING, POLLING, SeqCst, SeqCst)
                 {
                     Ok(_) => {
-                        return QUEUE.with(|q| {
-                            if let Some(q) = q.borrow().upgrade() {
-                                q.tx.send(clone_task(Arc::into_raw(
-                                    ManuallyDrop::into_inner(task).0,
-                                )))
-                                .unwrap()
-                            }
-                        })
+                        task.0.queue.tx.send(clone_task(&*task.0)).unwrap();
+                        break;
                     }
                     Err(cur) => status = cur,
                 }
