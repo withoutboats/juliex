@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::*;
@@ -31,4 +32,22 @@ fn destructor_runs() {
     let (tx, rx) = channel();
     std::mem::forget(Task::new(DropFuture(tx)));
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn with_setup() {
+    thread_local! {
+        static FLAG: Cell<bool> = Cell::new(false);
+    }
+
+    // Test that the init function gets called.
+    let pool = ThreadPool::with_setup(|| FLAG.with(|f| f.set(true)));
+    let (tx, rx) = channel();
+
+    pool.spawn(async move {
+        assert_eq!(FLAG.with(|f| f.get()), true);
+        tx.send(()).unwrap();
+    });
+
+    rx.recv().unwrap();
 }

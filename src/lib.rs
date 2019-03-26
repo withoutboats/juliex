@@ -1,36 +1,95 @@
-#![feature(futures_api)]
+#![feature(async_await, futures_api)]
+
+//! A concurrent executor for Rust futures.
 
 #[cfg(test)]
 mod tests;
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
+use std::fmt;
 use std::future::Future;
-use std::mem::{ManuallyDrop, transmute, forget};
+use std::mem::{forget, ManuallyDrop};
 use std::pin::Pin;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering::SeqCst}};
-use std::task::{Poll, Waker, RawWaker, RawWakerVTable};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering::SeqCst},
+    Arc, Weak,
+};
+use std::task::{Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread;
 
 use crossbeam::channel;
 
 lazy_static::lazy_static! {
-    static ref QUEUE: Arc<TaskQueue> = {
+    static ref THREAD_POOL: ThreadPool = ThreadPool::new();
+}
+
+thread_local! {
+    static QUEUE: RefCell<Weak<TaskQueue>> = RefCell::new(Weak::new());
+}
+
+/// A threadpool that futures can be spawned on.
+///
+/// This is useful when you want to perform some setup logic around the
+/// threadpool. If you don't need to setup extra logic, it's recommended to use
+/// `juliex::spawn()` directly.
+pub struct ThreadPool {
+    queue: Arc<TaskQueue>,
+}
+
+impl ThreadPool {
+    /// Create a new threadpool instance.
+    pub fn new() -> Self {
+        Self::with_setup(|| ())
+    }
+
+    /// Create a new instance with a method that's called for every thread
+    /// that's spawned.
+    pub fn with_setup<F>(f: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let f = Arc::new(f);
         let (tx, rx) = channel::unbounded();
-        let queue = Arc::new(TaskQueue { tx, rx});
+        let queue = Arc::new(TaskQueue { tx, rx });
         let max_cpus = num_cpus::get() * 2;
         for _ in 0..max_cpus {
-            let queue = queue.clone();
+            let f = f.clone();
+            let rx = queue.rx.clone();
+            let queue = Arc::downgrade(&queue);
             thread::spawn(move || {
-                for task in &queue.rx {
+                QUEUE.with(|q| *q.borrow_mut() = queue.clone());
+                f();
+                for task in rx {
                     unsafe { task.poll() }
                 }
             });
         }
-        queue
-    };
+        ThreadPool { queue }
+    }
+
+    /// Spawn a new future on the threadpool.
+    pub fn spawn<F>(&self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.queue
+            .tx
+            .send(Task::new(future, self.queue.clone()))
+            .unwrap();
+    }
 }
 
-pub fn spawn<F>(future: F) where F: Future<Output = ()> + Send + 'static {
-    QUEUE.tx.send(Task::new(future)).unwrap();
+/// Spawn a new future on a threadpool.
+pub fn spawn<F>(future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    QUEUE.with(|q| {
+        if let Some(q) = q.borrow().upgrade() {
+            q.tx.send(Task::new(future, q.clone())).unwrap();
+        } else {
+            THREAD_POOL.spawn(future);
+        }
+    });
 }
 
 struct TaskQueue {
@@ -42,46 +101,32 @@ struct TaskQueue {
 #[repr(transparent)]
 struct Task(Arc<AtomicFuture>);
 
-#[derive(Debug)]
-struct AtomicFuture<F: ?Sized = ()> {
+struct AtomicFuture {
+    queue: Arc<TaskQueue>,
     status: AtomicUsize,
-    vtable: *const (),
-    future: ManuallyDrop<UnsafeCell<F>>,
+    future: UnsafeCell<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
 }
 
-impl<F: ?Sized> Drop for AtomicFuture<F> {
-    fn drop(&mut self) {
-        unsafe {
-            let future: &mut ManuallyDrop<dyn Future<Output = ()> + Send + 'static> = {
-                transmute(Obj {
-                    data: self.future.get() as *mut (),
-                    vtable: self.vtable,
-                })
-            };
-            ManuallyDrop::drop(future);
-        }
+impl fmt::Debug for AtomicFuture {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        "AtomicFuture".fmt(f)
     }
 }
 
-#[repr(C)] struct Obj { data: *mut (), vtable: *const () }
+unsafe impl Send for AtomicFuture {}
+unsafe impl Sync for AtomicFuture {}
 
-unsafe impl Send for AtomicFuture { }
-unsafe impl Sync for AtomicFuture { }
-
-const WAITING: usize = 0;       // --> POLLING
-const POLLING: usize = 1;       // --> WAITING, REPOLL, or COMPLETE
-const REPOLL: usize = 2;        // --> POLLING
-const COMPLETE: usize = 3;      // No transitions out
+const WAITING: usize = 0; // --> POLLING
+const POLLING: usize = 1; // --> WAITING, REPOLL, or COMPLETE
+const REPOLL: usize = 2; // --> POLLING
+const COMPLETE: usize = 3; // No transitions out
 
 impl Task {
-    fn new<F: Future<Output = ()> + Send + 'static>(future: F) -> Task {
-        let vtable = unsafe {
-            transmute::<&(dyn Future<Output = ()> + Send + 'static), Obj>(&future).vtable
-        };
-        let future: Arc<AtomicFuture<F>> = Arc::new(AtomicFuture {
+    fn new<F: Future<Output = ()> + Send + 'static>(future: F, queue: Arc<TaskQueue>) -> Task {
+        let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
+            queue,
             status: AtomicUsize::new(WAITING),
-            vtable: vtable,
-            future: ManuallyDrop::new(UnsafeCell::new(future))
+            future: UnsafeCell::new(Box::pin(future)),
         });
         let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
         unsafe { task(future) }
@@ -89,41 +134,44 @@ impl Task {
 
     unsafe fn poll(self) {
         self.0.status.store(POLLING, SeqCst);
-        let mut future: Pin<&mut (dyn Future<Output = ()> + Send + 'static)> = {
-            Pin::new_unchecked(transmute(Obj {
-                data: self.0.future.get(),
-                vtable: self.0.vtable,
-            }))
-        };
-        let waker = waker(&*self.0);
+        let waker = ManuallyDrop::new(waker(&*self.0));
         loop {
-            if let Poll::Ready(_) = future.as_mut().poll(&waker) {
+            if let Poll::Ready(_) = (&mut *self.0.future.get()).as_mut().poll(&waker) {
                 break self.0.status.store(COMPLETE, SeqCst);
             }
-            match self.0.status.compare_exchange(POLLING, WAITING, SeqCst, SeqCst) {
-                Ok(_)   => break,
-                Err(_)  => self.0.status.store(POLLING, SeqCst),
+            match self
+                .0
+                .status
+                .compare_exchange(POLLING, WAITING, SeqCst, SeqCst)
+            {
+                Ok(_) => break,
+                Err(_) => self.0.status.store(POLLING, SeqCst),
             }
         }
-        forget(waker)
     }
 }
 
 unsafe fn waker(task: *const AtomicFuture) -> Waker {
-    Waker::new_unchecked(RawWaker::new(task as *const (), &RawWakerVTable {
-        clone: clone_raw,
-        wake: wake_raw,
-        drop: drop_raw,
-    }))
+    Waker::new_unchecked(RawWaker::new(
+        task as *const (),
+        &RawWakerVTable {
+            clone: clone_raw,
+            wake: wake_raw,
+            drop: drop_raw,
+        },
+    ))
 }
 
 unsafe fn clone_raw(this: *const ()) -> RawWaker {
     let task = clone_task(this as *const AtomicFuture);
-    RawWaker::new(Arc::into_raw(task.0) as *const (), &RawWakerVTable {
-        clone: clone_raw,
-        wake: wake_raw,
-        drop: drop_raw,
-    })
+    RawWaker::new(
+        Arc::into_raw(task.0) as *const (),
+        &RawWakerVTable {
+            clone: clone_raw,
+            wake: wake_raw,
+            drop: drop_raw,
+        },
+    )
 }
 
 unsafe fn drop_raw(this: *const ()) {
@@ -131,21 +179,31 @@ unsafe fn drop_raw(this: *const ()) {
 }
 
 unsafe fn wake_raw(this: *const ()) {
-    let task = task(this as *const AtomicFuture);
+    let task = ManuallyDrop::new(task(this as *const AtomicFuture));
     let mut status = task.0.status.load(SeqCst);
     loop {
         match status {
             WAITING => {
-                match task.0.status.compare_exchange(WAITING, POLLING, SeqCst, SeqCst) {
+                match task
+                    .0
+                    .status
+                    .compare_exchange(WAITING, POLLING, SeqCst, SeqCst)
+                {
                     Ok(_) => {
-                        return QUEUE.tx.send(clone_task(Arc::into_raw(task.0))).unwrap()
+                        task.0.queue.tx.send(clone_task(&*task.0)).unwrap();
+                        break;
                     }
                     Err(cur) => status = cur,
                 }
             }
             POLLING => {
-                if let Err(cur) = task.0.status.compare_exchange(POLLING, REPOLL, SeqCst, SeqCst) {
-                    status = cur;
+                match task
+                    .0
+                    .status
+                    .compare_exchange(POLLING, REPOLL, SeqCst, SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(cur) => status = cur,
                 }
             }
             _ => break,
