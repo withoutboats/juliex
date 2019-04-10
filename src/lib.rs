@@ -59,7 +59,6 @@ use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
 use std::future::Future;
 use std::mem::{forget, ManuallyDrop};
-use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicUsize, Ordering::SeqCst},
     Arc, Weak,
@@ -69,6 +68,7 @@ use std::thread;
 
 use crossbeam::channel;
 use futures::future::FutureObj;
+use futures::prelude::*;
 
 #[cfg(test)]
 mod tests;
@@ -131,6 +131,14 @@ impl ThreadPool {
             .send(Task::new(future, self.queue.clone()))
             .unwrap();
     }
+
+    /// Spawn a boxed future on the threadpool.
+    pub fn spawn_obj(&self, future: FutureObj<'static, ()>) {
+        self.queue
+            .tx
+            .send(Task::new_boxed(future, self.queue.clone()))
+            .unwrap();
+    }
 }
 
 /// Spawn a task on the threadpool.
@@ -175,7 +183,7 @@ struct Task(Arc<AtomicFuture>);
 struct AtomicFuture {
     queue: Arc<TaskQueue>,
     status: AtomicUsize,
-    future: UnsafeCell<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    future: UnsafeCell<FutureObj<'static, ()>>,
 }
 
 impl fmt::Debug for AtomicFuture {
@@ -197,7 +205,17 @@ impl Task {
         let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
             queue,
             status: AtomicUsize::new(WAITING),
-            future: UnsafeCell::new(Box::pin(future)),
+            future: UnsafeCell::new(Box::pin(future).into()),
+        });
+        let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
+        unsafe { task(future) }
+    }
+
+    fn new_boxed(future: FutureObj<'static, ()>, queue: Arc<TaskQueue>) -> Task {
+        let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
+            queue,
+            status: AtomicUsize::new(WAITING),
+            future: UnsafeCell::new(future),
         });
         let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
         unsafe { task(future) }
@@ -207,7 +225,7 @@ impl Task {
         self.0.status.store(POLLING, SeqCst);
         let waker = ManuallyDrop::new(waker(&*self.0));
         loop {
-            if let Poll::Ready(_) = (&mut *self.0.future.get()).as_mut().poll(&waker) {
+            if let Poll::Ready(_) = (&mut *self.0.future.get()).poll_unpin(&waker) {
                 break self.0.status.store(COMPLETE, SeqCst);
             }
             match self
