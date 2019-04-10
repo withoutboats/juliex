@@ -1,9 +1,60 @@
-#![feature(async_await, futures_api)]
+//! juliex is a concurrent executor for Rust futures. It is implemented as a
+//! threadpool executor using a single, shared queue. Algorithmically, it is very
+//! similar to the Threadpool executor provided by the futures crate. The main
+//! difference is that juliex uses a crossbeam channel and performs a single
+//! allocation per spawned future, whereas the futures Threadpool uses std
+//! concurrency primitives and multiple allocations.
+//!
+//! Similar to [romio][romio] - an IO reactor - juliex currently provides no user
+//! configuration. It exposes the most minimal API possible.
+//!
+//! [romio]: https://github.com/withoutboats/romio
+//!
+//! ## Example
+//! ```rust,no_run
+//! #![feature(async_await, await_macro, futures_api)]
+//!
+//! use std::io;
+//!
+//! use futures::StreamExt;
+//! use futures::executor;
+//! use futures::io::AsyncReadExt;
+//!
+//! use romio::{TcpListener, TcpStream};
+//!
+//! fn main() -> io::Result<()> {
+//!     executor::block_on(async {
+//!         let mut listener = TcpListener::bind(&"127.0.0.1:7878".parse().unwrap())?;
+//!         let mut incoming = listener.incoming();
+//!
+//!         println!("Listening on 127.0.0.1:7878");
+//!
+//!         while let Some(stream) = await!(incoming.next()) {
+//!             let stream = stream?;
+//!             let addr = stream.peer_addr()?;
+//!
+//!             juliex::spawn(async move {
+//!                 println!("Accepting stream from: {}", addr);
+//!
+//!                 await!(echo_on(stream)).unwrap();
+//!
+//!                 println!("Closing stream from: {}", addr);
+//!             });
+//!         }
+//!
+//!         Ok(())
+//!     })
+//! }
+//!
+//! async fn echo_on(stream: TcpStream) -> io::Result<()> {
+//!     let (mut reader, mut writer) = stream.split();
+//!     await!(reader.copy_into(&mut writer))?;
+//!     Ok(())
+//! }
+//! ```
 
-//! A concurrent executor for Rust futures.
+#![feature(async_await, arbitrary_self_types, futures_api)]
 
-#[cfg(test)]
-mod tests;
 use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
 use std::future::Future;
@@ -17,6 +68,9 @@ use std::task::{Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread;
 
 use crossbeam::channel;
+
+#[cfg(test)]
+mod tests;
 
 lazy_static::lazy_static! {
     static ref THREAD_POOL: ThreadPool = ThreadPool::new();
@@ -78,7 +132,23 @@ impl ThreadPool {
     }
 }
 
-/// Spawn a new future on a threadpool.
+/// Spawn a task on the threadpool.
+///
+/// ## Example
+/// ```rust,no_run
+/// #![feature(async_await, await_macro, futures_api)]
+/// use std::thread;
+/// use futures::executor;
+///
+/// fn main() {
+///     for _ in 0..10 {
+///         juliex::spawn(async move {
+///             let id = thread::current().id();
+///             println!("Running on thread {:?}", id);
+///         })
+///     }
+/// }
+/// ```
 pub fn spawn<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
