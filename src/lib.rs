@@ -68,6 +68,7 @@ use std::task::{Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread;
 
 use crossbeam::channel;
+use futures::future::FutureObj;
 
 #[cfg(test)]
 mod tests;
