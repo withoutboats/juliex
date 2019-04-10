@@ -53,7 +53,7 @@
 //! }
 //! ```
 
-#![feature(arbitrary_self_types, futures_api)]
+#![feature(async_await, arbitrary_self_types, futures_api)]
 
 use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
@@ -68,6 +68,9 @@ use std::task::{Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread;
 
 use crossbeam::channel;
+
+#[cfg(test)]
+mod tests;
 
 lazy_static::lazy_static! {
     static ref THREAD_POOL: ThreadPool = ThreadPool::new();
