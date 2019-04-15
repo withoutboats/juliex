@@ -59,7 +59,6 @@ use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
 use std::future::Future;
 use std::mem::{forget, ManuallyDrop};
-use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicUsize, Ordering::SeqCst},
     Arc, Weak,
@@ -68,6 +67,8 @@ use std::task::{Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread;
 
 use crossbeam::channel;
+use futures::future::FutureObj;
+use futures::prelude::*;
 
 #[cfg(test)]
 mod tests;
@@ -91,12 +92,14 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     /// Create a new threadpool instance.
+    #[inline]
     pub fn new() -> Self {
         Self::with_setup(|| ())
     }
 
     /// Create a new instance with a method that's called for every thread
     /// that's spawned.
+    #[inline]
     pub fn with_setup<F>(f: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
@@ -121,6 +124,7 @@ impl ThreadPool {
     }
 
     /// Spawn a new future on the threadpool.
+    #[inline]
     pub fn spawn<F>(&self, future: F)
     where
         F: Future<Output = ()> + Send + 'static,
@@ -128,6 +132,15 @@ impl ThreadPool {
         self.queue
             .tx
             .send(Task::new(future, self.queue.clone()))
+            .unwrap();
+    }
+
+    /// Spawn a boxed future on the threadpool.
+    #[inline]
+    pub fn spawn_obj(&self, future: FutureObj<'static, ()>) {
+        self.queue
+            .tx
+            .send(Task::new_boxed(future, self.queue.clone()))
             .unwrap();
     }
 }
@@ -149,6 +162,7 @@ impl ThreadPool {
 ///     }
 /// }
 /// ```
+#[inline]
 pub fn spawn<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
@@ -174,10 +188,11 @@ struct Task(Arc<AtomicFuture>);
 struct AtomicFuture {
     queue: Arc<TaskQueue>,
     status: AtomicUsize,
-    future: UnsafeCell<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    future: UnsafeCell<FutureObj<'static, ()>>,
 }
 
 impl fmt::Debug for AtomicFuture {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         "AtomicFuture".fmt(f)
     }
@@ -192,21 +207,34 @@ const REPOLL: usize = 2; // --> POLLING
 const COMPLETE: usize = 3; // No transitions out
 
 impl Task {
+    #[inline]
     fn new<F: Future<Output = ()> + Send + 'static>(future: F, queue: Arc<TaskQueue>) -> Task {
         let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
             queue,
             status: AtomicUsize::new(WAITING),
-            future: UnsafeCell::new(Box::pin(future)),
+            future: UnsafeCell::new(Box::pin(future).into()),
         });
         let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
         unsafe { task(future) }
     }
 
+    #[inline]
+    fn new_boxed(future: FutureObj<'static, ()>, queue: Arc<TaskQueue>) -> Task {
+        let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
+            queue,
+            status: AtomicUsize::new(WAITING),
+            future: UnsafeCell::new(future),
+        });
+        let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
+        unsafe { task(future) }
+    }
+
+    #[inline]
     unsafe fn poll(self) {
         self.0.status.store(POLLING, SeqCst);
         let waker = ManuallyDrop::new(waker(&*self.0));
         loop {
-            if let Poll::Ready(_) = (&mut *self.0.future.get()).as_mut().poll(&waker) {
+            if let Poll::Ready(_) = (&mut *self.0.future.get()).poll_unpin(&waker) {
                 break self.0.status.store(COMPLETE, SeqCst);
             }
             match self
@@ -221,6 +249,7 @@ impl Task {
     }
 }
 
+#[inline]
 unsafe fn waker(task: *const AtomicFuture) -> Waker {
     Waker::new_unchecked(RawWaker::new(
         task as *const (),
@@ -232,6 +261,7 @@ unsafe fn waker(task: *const AtomicFuture) -> Waker {
     ))
 }
 
+#[inline]
 unsafe fn clone_raw(this: *const ()) -> RawWaker {
     let task = clone_task(this as *const AtomicFuture);
     RawWaker::new(
@@ -244,10 +274,12 @@ unsafe fn clone_raw(this: *const ()) -> RawWaker {
     )
 }
 
+#[inline]
 unsafe fn drop_raw(this: *const ()) {
     drop(task(this as *const AtomicFuture))
 }
 
+#[inline]
 unsafe fn wake_raw(this: *const ()) {
     let task = ManuallyDrop::new(task(this as *const AtomicFuture));
     let mut status = task.0.status.load(SeqCst);
@@ -281,10 +313,12 @@ unsafe fn wake_raw(this: *const ()) {
     }
 }
 
+#[inline]
 unsafe fn task(future: *const AtomicFuture) -> Task {
     Task(Arc::from_raw(future))
 }
 
+#[inline]
 unsafe fn clone_task(future: *const AtomicFuture) -> Task {
     let task = task(future);
     forget(task.clone());
