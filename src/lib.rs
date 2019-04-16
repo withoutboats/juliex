@@ -148,7 +148,7 @@ impl ThreadPool {
 /// Spawn a task on the threadpool.
 ///
 /// ## Example
-/// ```rust,no_run
+/// ```rust,ignore
 /// #![feature(async_await, await_macro, futures_api)]
 /// use std::thread;
 /// use futures::executor;
@@ -179,6 +179,13 @@ where
 struct TaskQueue {
     tx: channel::Sender<Task>,
     rx: channel::Receiver<Task>,
+}
+
+impl Default for TaskQueue {
+    fn default() -> TaskQueue {
+        let (tx, rx) = channel::unbounded();
+        TaskQueue { tx, rx }
+    }
 }
 
 #[derive(Clone, Debug)]
