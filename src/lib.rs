@@ -254,7 +254,7 @@ impl Task {
 unsafe fn waker(task: *const AtomicFuture) -> Waker {
     Waker::from_raw(RawWaker::new(
         task as *const (),
-        &RawWakerVTable::new(clone_raw, wake_raw, wake_raw, drop_raw),
+        &RawWakerVTable::new(clone_raw, wake_raw, wake_ref_raw, drop_raw),
     ))
 }
 
@@ -263,7 +263,7 @@ unsafe fn clone_raw(this: *const ()) -> RawWaker {
     let task = clone_task(this as *const AtomicFuture);
     RawWaker::new(
         Arc::into_raw(task.0) as *const (),
-        &RawWakerVTable::new(clone_raw, wake_raw, wake_raw, drop_raw),
+        &RawWakerVTable::new(clone_raw, wake_raw, wake_ref_raw, drop_raw),
     )
 }
 
@@ -274,6 +274,40 @@ unsafe fn drop_raw(this: *const ()) {
 
 #[inline]
 unsafe fn wake_raw(this: *const ()) {
+    let task = task(this as *const AtomicFuture);
+    let mut status = task.0.status.load(SeqCst);
+    loop {
+        match status {
+            WAITING => {
+                match task
+                    .0
+                    .status
+                    .compare_exchange(WAITING, POLLING, SeqCst, SeqCst)
+                {
+                    Ok(_) => {
+                        task.0.queue.tx.send(clone_task(&*task.0)).unwrap();
+                        break;
+                    }
+                    Err(cur) => status = cur,
+                }
+            }
+            POLLING => {
+                match task
+                    .0
+                    .status
+                    .compare_exchange(POLLING, REPOLL, SeqCst, SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(cur) => status = cur,
+                }
+            }
+            _ => break,
+        }
+    }
+}
+
+#[inline]
+unsafe fn wake_ref_raw(this: *const ()) {
     let task = ManuallyDrop::new(task(this as *const AtomicFuture));
     let mut status = task.0.status.load(SeqCst);
     loop {
