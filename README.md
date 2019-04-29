@@ -12,7 +12,7 @@ configuration. It exposes the most minimal API possible.
 
 ## Example
 ```rust
-#![feature(async_await, await_macro, futures_api)]
+#![feature(async_await, await_macro)]
 
 use std::io;
 

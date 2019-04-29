@@ -12,7 +12,7 @@
 //!
 //! ## Example
 //! ```rust,no_run
-//! #![feature(async_await, await_macro, futures_api)]
+//! #![feature(async_await, await_macro)]
 //!
 //! use std::io;
 //!
@@ -53,7 +53,7 @@
 //! }
 //! ```
 
-#![feature(async_await, arbitrary_self_types, futures_api)]
+#![cfg_attr(test, feature(async_await))]
 
 use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
@@ -67,7 +67,7 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::thread;
 
 use crossbeam::channel;
-use futures::future::FutureObj;
+use futures::future::BoxFuture;
 use futures::prelude::*;
 
 #[cfg(test)]
@@ -137,7 +137,7 @@ impl ThreadPool {
 
     /// Spawn a boxed future on the threadpool.
     #[inline]
-    pub fn spawn_obj(&self, future: FutureObj<'static, ()>) {
+    pub fn spawn_boxed(&self, future: BoxFuture<'static, ()>) {
         self.queue
             .tx
             .send(Task::new_boxed(future, self.queue.clone()))
@@ -149,7 +149,7 @@ impl ThreadPool {
 ///
 /// ## Example
 /// ```rust,ignore
-/// #![feature(async_await, await_macro, futures_api)]
+/// #![feature(async_await, await_macro)]
 /// use std::thread;
 /// use futures::executor;
 ///
@@ -195,7 +195,7 @@ struct Task(Arc<AtomicFuture>);
 struct AtomicFuture {
     queue: Arc<TaskQueue>,
     status: AtomicUsize,
-    future: UnsafeCell<FutureObj<'static, ()>>,
+    future: UnsafeCell<BoxFuture<'static, ()>>,
 }
 
 impl fmt::Debug for AtomicFuture {
@@ -219,14 +219,14 @@ impl Task {
         let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
             queue,
             status: AtomicUsize::new(WAITING),
-            future: UnsafeCell::new(Box::pin(future).into()),
+            future: UnsafeCell::new(future.boxed()),
         });
         let future: *const AtomicFuture = Arc::into_raw(future) as *const AtomicFuture;
         unsafe { task(future) }
     }
 
     #[inline]
-    fn new_boxed(future: FutureObj<'static, ()>, queue: Arc<TaskQueue>) -> Task {
+    fn new_boxed(future: BoxFuture<'static, ()>, queue: Arc<TaskQueue>) -> Task {
         let future: Arc<AtomicFuture> = Arc::new(AtomicFuture {
             queue,
             status: AtomicUsize::new(WAITING),
