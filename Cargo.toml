@@ -8,9 +8,9 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 crossbeam = "0.6.0"
-futures-preview = "0.3.0-alpha.15"
+futures-preview = "0.3.0-alpha.16"
 num_cpus = "1.9.0"
 lazy_static = "1.2.0"
 
 [dev-dependencies]
-romio = "0.3.0-alpha.6"
+romio = "0.3.0-alpha.7"

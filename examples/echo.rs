@@ -1,4 +1,4 @@
-#![feature(async_await, await_macro)]
+#![feature(async_await)]
 
 use std::io;
 
@@ -15,14 +15,14 @@ fn main() -> io::Result<()> {
 
         println!("Listening on 127.0.0.1:7878");
 
-        while let Some(stream) = await!(incoming.next()) {
+        while let Some(stream) = incoming.next().await {
             let stream = stream?;
             let addr = stream.peer_addr()?;
 
             juliex::spawn(async move {
                 println!("Accepting stream from: {}", addr);
 
-                await!(echo_on(stream)).unwrap();
+                echo_on(stream).await.unwrap();
 
                 println!("Closing stream from: {}", addr);
             });
@@ -34,6 +34,6 @@ fn main() -> io::Result<()> {
 
 async fn echo_on(stream: TcpStream) -> io::Result<()> {
     let (mut reader, mut writer) = stream.split();
-    await!(reader.copy_into(&mut writer))?;
+    reader.copy_into(&mut writer).await?;
     Ok(())
 }
