@@ -5,6 +5,7 @@ version = "0.3.0-alpha.6"
 authors = ["Without Boats <boats@mozilla.com>"]
 description = "a very basic future executor"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/withoutboats/juliex"
 
 [dependencies]
 crossbeam = "0.6.0"
