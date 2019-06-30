@@ -1,5 +1,6 @@
 use std::cell::Cell;
-use std::future::Future;
+use std::future::*;
+use futures::Poll;
 use std::pin::Pin;
 use std::task::Context;
 use std::sync::mpsc::*;
@@ -23,14 +24,17 @@ impl Drop for DropFuture {
 
 #[test]
 fn destructor_runs() {
+    let (task_tx, _) = crossbeam::channel::unbounded();
+    let task_tx = Arc::new(task_tx);
+
     // Test that the destructor runs
     let (tx, rx) = channel();
-    drop(Task::new(DropFuture(tx), Default::default()));
+    drop(Task::new(DropFuture(tx), task_tx.clone()));
     rx.try_recv().unwrap();
 
     // Test that the destructor doesn't run if we forget the task
     let (tx, rx) = channel();
-    std::mem::forget(Task::new(DropFuture(tx), Default::default()));
+    std::mem::forget(Task::new(DropFuture(tx), task_tx.clone()));
     assert!(rx.try_recv().is_err());
 }
 
