@@ -25,6 +25,7 @@
 //! ```
 use super::task::{Task, TaskQueue};
 use std::{sync::Arc, marker::PhantomData, mem::drop};
+#[derive(Clone)]
 pub struct Pool<'a> {
     queue: Arc<TaskQueue>,
     waiter: WaitGroup,
@@ -32,8 +33,7 @@ pub struct Pool<'a> {
 }
 
 use crossbeam::{channel, thread::Scope, sync::WaitGroup};
-use futures::future::BoxFuture;
-use futures::prelude::{Future, FutureExt};
+use futures::future::*;
 impl<'a> Pool<'a> {
     /// Spawn a future on the threadpool.
     #[inline] pub fn spawn<F: Future<Output=()> + Send + 'a>(&self, f: F) {
