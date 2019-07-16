@@ -15,7 +15,7 @@
 //!         // let tp = ThreadPool::new().expect("error creating thread pool");
 //!
 //!         let tp = juliex::scoped::Pool::new(&scope);
-//!         let fut = async || {
+//!         let fut = || async {
 //!             println!("{} from future!", not_copy);
 //!         };
 //!         tp.spawn(fut());
@@ -100,7 +100,7 @@ mod tests {
         let not_copy = &not_copy; // ensure no move
         crossbeam::scope(|scope| {
             let tp = super::Pool::new(&scope);
-            let fut = async || {
+            let fut = || async move {
                 assert_eq!(not_copy, "hello world!");
             };
             tp.spawn(fut());
