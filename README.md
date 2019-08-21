@@ -12,8 +12,6 @@ configuration. It exposes the most minimal API possible.
 
 ## Example
 ```rust
-#![feature(async_await)]
-
 use std::io;
 
 use futures::StreamExt;
