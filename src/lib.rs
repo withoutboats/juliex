@@ -12,8 +12,6 @@
 //!
 //! ## Example
 //! ```rust,no_run
-//! #![feature(async_await)]
-//!
 //! use std::io;
 //!
 //! use futures::StreamExt;
@@ -52,8 +50,6 @@
 //!     Ok(())
 //! }
 //! ```
-
-#![cfg_attr(test, feature(async_await))]
 
 use std::cell::{RefCell, UnsafeCell};
 use std::fmt;
@@ -149,7 +145,6 @@ impl ThreadPool {
 ///
 /// ## Example
 /// ```rust,ignore
-/// #![feature(async_await)]
 /// use std::thread;
 /// use futures::executor;
 ///
