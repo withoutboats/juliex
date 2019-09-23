@@ -1,5 +1,9 @@
 # juliex - a minimal futures executor
 
+__Note: This library is not actively being developed. If you're looking for an
+`async/await` compatible runtime consider using
+[`async-std`](https://github.com/async-rs/async-std).__
+
 juliex is a concurrent executor for Rust futures. It is implemented as a
 threadpool executor using a single, shared queue. Algorithmically, it is very
 similar to the Threadpool executor provided by the futures crate. The main
