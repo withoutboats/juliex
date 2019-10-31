@@ -82,6 +82,7 @@ thread_local! {
 /// This is useful when you want to perform some setup logic around the
 /// threadpool. If you don't need to setup extra logic, it's recommended to use
 /// `juliex::spawn()` directly.
+#[derive(Clone, Debug)]
 pub struct ThreadPool {
     queue: Arc<TaskQueue>,
 }
@@ -171,6 +172,7 @@ where
     });
 }
 
+#[derive(Debug)]
 struct TaskQueue {
     tx: channel::Sender<Task>,
     rx: channel::Receiver<Task>,
